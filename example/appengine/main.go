@@ -1,65 +1,50 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
-	"github.com/markbates/goth/providers/facebook"
-	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/google"
-	"github.com/markbates/goth/providers/twitter"
 
 	"loov.dev/mauth"
 )
 
 func main() {
-	defaultAddr := ""
+	ctx := context.Background()
+
+	listenAddress := "127.0.0.1:8080"
 	if os.Getenv("PORT") != "" {
-		defaultAddr = ":" + os.Getenv("PORT")
-	}
-	if defaultAddr == "" {
-		defaultAddr = "127.0.0.1:8080"
+		listenAddress = ":" + os.Getenv("PORT")
 	}
 
-	authsecret := flag.String("auth.secret", "", "authentication session secret")
-	listen := flag.String("listen", defaultAddr, "address to listen on")
-	host := flag.String("host", "https://storj-jam.appspot.com", "public host")
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	secretName := os.Getenv("GOOGLE_CREDENTIALS_SECRET_NAME")
 
-	providers := []*ProviderCredential{
-		{Name: "google", New: func(key, value, callback string) mauth.Provider { return google.New(key, value, callback) }},
-		{Name: "twitter", New: func(key, value, callback string) mauth.Provider { return twitter.New(key, value, callback) }},
-		{Name: "facebook", New: func(key, value, callback string) mauth.Provider { return facebook.New(key, value, callback) }},
-		{Name: "github", New: func(key, value, callback string) mauth.Provider { return github.New(key, value, callback) }},
-	}
-	for _, provider := range providers {
-		provider.AddFlag(flag.CommandLine)
-	}
-	flag.Parse()
-
-	if *host == "" {
-		*host = *listen
+	credentials, err := LoadCredentialsFromSecretManager(ctx, projectID, secretName)
+	if err != nil {
+		log.Fatal("unable to load credentials", err)
 	}
 
 	config := Config{
-		Host:       *host,
-		AuthSecret: *authsecret,
-		Providers:  providers,
+		Host:       "https://storj-jam.appspot.com",
+		AuthSecret: "blah",
 	}
+
+	provider := google.New(credentials.ClientID, credentials.ClientSecret, credentials.RedirectURIs[0], "profile", "openid", "email")
 
 	logger := log.New(os.Stderr, "", log.Lshortfile)
 
 	router := mux.NewRouter()
-	server := NewServer(logger, config)
+	server := NewServer(logger, config, provider)
 	server.Register(router)
 
-	err := http.ListenAndServe(*listen, router)
+	err = http.ListenAndServe(listenAddress, router)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -70,26 +55,6 @@ const SessionName = "example"
 type Config struct {
 	Host       string
 	AuthSecret string
-
-	Providers []*ProviderCredential
-}
-
-type ProviderCredential struct {
-	Name string
-	URL  template.URL
-	New  func(key, secret, callback string) mauth.Provider
-
-	Key    string
-	Secret string
-}
-
-func (ks *ProviderCredential) Empty() bool { return ks.Key == "" }
-
-func (ks *ProviderCredential) AddFlag(fs *flag.FlagSet) {
-	lower := strings.ToLower(ks.Name)
-	upper := strings.ToUpper(ks.Name)
-	fs.StringVar(&ks.Key, lower+".key", os.Getenv(upper+"_KEY"), ks.Name+" OAuth2 client key (`$"+upper+"_KEY`)")
-	fs.StringVar(&ks.Secret, lower+".secret", os.Getenv(upper+"_SECRET"), ks.Name+" OAuth2 client secret (`$"+upper+"_SECRET`)")
 }
 
 type Server struct {
@@ -99,7 +64,7 @@ type Server struct {
 	config Config
 }
 
-func NewServer(log *log.Logger, config Config) *Server {
+func NewServer(log *log.Logger, config Config, provider mauth.Provider) *Server {
 	server := &Server{
 		log:    log,
 		config: config,
@@ -110,16 +75,7 @@ func NewServer(log *log.Logger, config Config) *Server {
 	state.Options.Secure = true
 	server.state = state
 
-	providers := mauth.Providers{}
-	for _, cred := range config.Providers {
-		cred.URL = template.URL(config.Host + "/auth/" + cred.Name + "/login")
-		if cred.Empty() {
-			continue
-		}
-		providers[cred.Name] = cred.New(cred.Key, cred.Secret, config.Host+"/auth/"+cred.Name+"/callback")
-	}
-
-	server.auth = mauth.NewWithCookieStore(config.AuthSecret, providers)
+	server.auth = mauth.NewWithCookieStore(config.AuthSecret, mauth.Providers{"google": provider})
 
 	return server
 }
@@ -146,52 +102,14 @@ func (server *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	err := dashboard.Execute(w, map[string]interface{}{
-		"Flashes":   flashes,
-		"User":      user,
-		"Providers": server.config.Providers,
+	err := dashboardTemplate.Execute(w, map[string]interface{}{
+		"Flashes": flashes,
+		"User":    user,
 	})
 	if err != nil {
 		server.log.Printf("failed to display template: %+v", err)
 	}
 }
-
-var dashboard = template.Must(template.New("").Parse(`<!DOCTYPE html>
-<html class="no-js">
-<head>
-	<meta charset="utf-8">
-	<title>mauth</title>
-</head>
-<body>
-	<div>
-	{{ range $flash := .Flashes }}
-	<p style="background: #fee;">{{ $flash }}</p>
-	{{ end }}
-	</div>
-
-	<h2>User</h2>
-	{{ with .User }}
-	<div>
-		<p><a href="/auth/logout">Logout</a></p>
-		<p>Name: {{.Name}} [{{.LastName}}, {{.FirstName}}]</p>
-		<p>Email: {{.Email}}</p>
-		<p>NickName: {{.NickName}}</p>
-		<p>UserID: {{.UserID}}</p>
-		<p>ExpiresAt: {{.ExpiresAt}}</p>
-	</div>
-	{{ else }}
-	<p>User not logged in.</p>
-	{{ end }}
-
-	<h2>Login</h2>
-	<div>
-	{{ range $provider := .Providers }}
-	<p><a href="{{$provider.URL}}" {{if $provider.Empty}}disabled{{end}}>{{$provider.Name}}</a></p>
-	{{ end }}
-	</div>
-</body>
-</html>
-`))
 
 func (server *Server) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	providerName := mux.Vars(r)["provider"]
@@ -259,3 +177,37 @@ func (server *Server) Logout(w http.ResponseWriter, r *http.Request) {
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
+
+var dashboardTemplate = template.Must(template.New("").Parse(`<!DOCTYPE html>
+<html class="no-js">
+<head>
+	<meta charset="utf-8">
+	<title>mauth</title>
+</head>
+<body>
+	<div>
+	{{ range $flash := .Flashes }}
+	<p style="background: #fee;">{{ $flash }}</p>
+	{{ end }}
+	</div>
+
+	<h2>User</h2>
+	{{ with .User }}
+	<div>
+		<p><a href="/auth/logout">Logout</a></p>
+		<p>Name: {{.Name}}</p>
+		<p>Email: {{.Email}}</p>
+		<p>UserID: {{.UserID}}</p>
+		<p>ExpiresAt: {{.ExpiresAt}}</p>
+	</div>
+	{{ else }}
+	<p>User not logged in.</p>
+	{{ end }}
+
+	<h2>Login</h2>
+	<div>
+	<p><a href="/auth/google/login">Google</a></p>
+	</div>
+</body>
+</html>
+`))
