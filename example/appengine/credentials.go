@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	secretmanagerpb "google.golang.org/genproto/googleapis/cloud/secretmanager/v1"
@@ -47,4 +48,14 @@ func LoadCredentialsFromSecretManager(ctx context.Context, projectID, secretName
 	}
 
 	return credentials.Web, nil
+}
+
+// ExtractDomainFromURI extracts domain from
+func ExtractDomainFromURI(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("invalid uri %q: %w", uri, err)
+	}
+
+	return u.Scheme + u.Host, nil
 }

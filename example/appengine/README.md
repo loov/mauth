@@ -1,8 +1,9 @@
 # appengine example
 
-This example demonstrates how to setup authentication on Google AppEngine and uses Secret Manager to manage credentials.
+This example demonstrates how to setup Google authentication on Google AppEngine with using Secret Manager to manage credentials.
+This approach avoids requiring people to download credentials to their development computers.
 
-The required steps are:
+To setup the project:
 
 1. In https://console.cloud.google.com/apis/credentials create new Web Credentials and setup Consent Screen.
 2. Download the `credentials.json`.
