@@ -53,8 +53,7 @@ type Sessions struct {
 }
 
 // NewWithCookieStore creates a new authentication manager that uses CookieStore with default name.
-func NewWithCookieStore(secretKey string, providers Providers) *Sessions {
-	secret := []byte(secretKey)
+func NewWithCookieStore(secret []byte, providers Providers) *Sessions {
 	if len(secret) == 0 {
 		var key [64]byte
 		_, err := rand.Read(key[:])
